@@ -1,9 +1,10 @@
 package main
 
 import (
-	"bytes"
+	"io/ioutil"
 	"log"
 	"os"
+	"strings"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -11,40 +12,52 @@ import (
 
 type SSHNode struct {
 	host     string
-	port     string
 	username string
-	password string
-
-	debug bool
 }
 
 func (node *SSHNode) Exec(command string) string {
 	session := node.connect()
 
-	var b bytes.Buffer
-	session.Stdout = &b
+	output, err := session.Output(command)
+	output_str := string(output)
 
-	if err := session.Run(command); err != nil {
-		log.Fatal("Failed to run: " + command + " : " + err.Error())
+	if err != nil {
+		if strings.Contains(output_str, "local node is not a member of the token ring") {
+			log.Println("Node already removed")
+		} else {
+			log.Println(output_str)
+			log.Fatal("Failed to run: " + command + " : " + err.Error())
+			os.Exit(2)
+		}
 	}
 
 	session.Close()
-	return b.String()
+	return output_str
 }
 
 func (node *SSHNode) getDial() *ssh.Client {
+	key, err := ioutil.ReadFile("/root/.ssh/id_rsa")
+	if err != nil {
+		log.Fatalf("unable to read private key: %v", err)
+	}
+
+	// Create the Signer for this private key.
+	signer, err := ssh.ParsePrivateKey(key)
+	if err != nil {
+		log.Fatalf("unable to parse private key: %v", err)
+	}
+
 	config := &ssh.ClientConfig{
 		User: node.username,
 		Auth: []ssh.AuthMethod{
-			ssh.Password(node.password),
+			ssh.PublicKeys(signer),
 		},
 	}
 
-	client, err := ssh.Dial("tcp", node.host+":"+node.port, config)
+	client, err := ssh.Dial("tcp", node.host+":22", config)
 	if err != nil {
-		if node.debug {
-			log.Println("Failed to dial host: " + node.host + ". Sleep for 1s and retry.")
-		}
+		log.Println("Failed to dial host: " + node.host + ". Sleep for 1s and retry.")
+		log.Fatalln(err)
 		time.Sleep(1000)
 		return node.getDial()
 	}
